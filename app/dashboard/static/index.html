@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AI_Edge Dashboard</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+  <style>
+    :root {
+      --bg: #1F2225;
+      --panel: #25282C;
+      --panel-2: #2A2D31;
+      --border: #3A3D42;
+      --text: #E6E6E6;
+      --muted: #B8BCC2;
+      --accent: #5A8DBC;
+      --ok: #1D9E75;
+      --warn: #E8A33D;
+      --bad: #D85A30;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro", "Apple SD Gothic Neo",
+        Helvetica, Arial, sans-serif; }
+    header {
+      display: flex; align-items: baseline; justify-content: space-between;
+      padding: 16px 24px; border-bottom: 1px solid var(--border); background: var(--panel-2);
+    }
+    header h1 { margin: 0; font-size: 18px; letter-spacing: 0.3px; }
+    header .meta { color: var(--muted); font-size: 12px; }
+    header .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+      background: var(--ok); margin-right: 6px; vertical-align: middle; }
+    main { padding: 16px 24px; }
+    .row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 16px; }
+    .card {
+      background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+      padding: 14px 16px;
+    }
+    .card h2 {
+      margin: 0 0 8px 0; font-size: 13px; color: var(--muted); font-weight: 500;
+      display: flex; justify-content: space-between; align-items: center;
+    }
+    .card .dev { color: var(--accent); font-weight: 600; font-size: 14px; }
+    .card .big { font-size: 26px; font-weight: 600; }
+    .card .sub { color: var(--muted); font-size: 12px; margin-top: 2px; }
+    .card .tags { margin-top: 10px; display: flex; flex-wrap: wrap; gap: 6px; }
+    .tag { font-size: 11px; padding: 3px 7px; background: var(--panel-2);
+      border: 1px solid var(--border); border-radius: 12px; color: var(--text); }
+    .grid-2 { display: grid; grid-template-columns: 1.4fr 1fr; gap: 12px; }
+    .panel {
+      background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px;
+    }
+    .panel h3 { margin: 0 0 10px 0; font-size: 13px; color: var(--muted); font-weight: 500; }
+    table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    th, td { padding: 6px 8px; text-align: left; border-bottom: 1px solid var(--border); }
+    th { color: var(--muted); font-weight: 500; }
+    td.dev { color: var(--accent); }
+    td.conf { text-align: right; font-variant-numeric: tabular-nums; }
+    .pulse { color: var(--ok); }
+    .stale { color: var(--warn); }
+    .dead { color: var(--bad); }
+    canvas { width: 100% !important; height: 200px !important; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1><span class="dot"></span> AI_Edge Dashboard</h1>
+    <div class="meta">
+      <span id="health">DB: …</span> ·
+      <span id="ts">—</span> ·
+      자동 새로고침 2s
+    </div>
+  </header>
+
+  <main>
+    <div class="row" id="cards">
+      <!-- device cards injected -->
+    </div>
+
+    <div class="grid-2">
+      <div class="panel">
+        <h3>분당 검출 건수 (최근 5분)</h3>
+        <canvas id="timeline"></canvas>
+      </div>
+      <div class="panel">
+        <h3>최근 검출 30건</h3>
+        <table>
+          <thead>
+            <tr>
+              <th>시각</th>
+              <th>노드</th>
+              <th>프레임</th>
+              <th>클래스</th>
+              <th class="conf">conf</th>
+            </tr>
+          </thead>
+          <tbody id="recent"></tbody>
+        </table>
+      </div>
+    </div>
+  </main>
+
+  <script>
+    const colors = ["#5A8DBC", "#1D9E75", "#E8A33D", "#D85A30", "#9C6ADE"];
+    let chart = null;
+
+    // --- 튜닝 가능한 상수 ---
+    const REFRESH_INTERVAL_MS = 2000;  // 대시보드 자동 새로고침 주기
+    const RECENT_LIMIT = 30;           // 최근 검출 테이블에 표시할 행 수
+    const TIMELINE_MINUTES = 5;        // 분당 추이 차트가 보여줄 시간 범위(분)
+
+    // 백엔드 타임스탬프는 naive UTC 문자열 — 'Z'를 붙여 UTC로 해석한다.
+    function parseUTC(iso) {
+      if (!iso) return null;
+      let t = iso.includes("T") ? iso : iso.replace(" ", "T");
+      if (!/[Zz]|[+\-]\d\d:?\d\d$/.test(t.slice(10))) t += "Z";
+      return new Date(t);
+    }
+    function fmtTime(iso) {
+      if (!iso) return "—";
+      return parseUTC(iso).toLocaleTimeString("ko-KR", { hour12: false });
+    }
+    function fmtAgo(iso) {
+      if (!iso) return "—";
+      const s = Math.floor((Date.now() - parseUTC(iso).getTime()) / 1000);
+      if (s < 60) return s + "초 전";
+      if (s < 3600) return Math.floor(s / 60) + "분 전";
+      return Math.floor(s / 3600) + "시간 전";
+    }
+    function statusClass(iso) {
+      if (!iso) return "dead";
+      const s = (Date.now() - parseUTC(iso).getTime()) / 1000;
+      if (s < 5) return "pulse";
+      if (s < 60) return "stale";
+      return "dead";
+    }
+
+    async function refresh() {
+      try {
+        const [stats, recent, timeline, health] = await Promise.all([
+          fetch("/api/stats").then(r => r.json()),
+          fetch(`/api/recent?limit=${RECENT_LIMIT}`).then(r => r.json()),
+          fetch(`/api/timeline?minutes=${TIMELINE_MINUTES}`).then(r => r.json()),
+          fetch("/api/health").then(r => r.json()),
+        ]);
+
+        // --- cards
+        const cards = document.getElementById("cards");
+        const known = ["edge-01", "edge-02", "edge-03"];
+        const byId = Object.fromEntries(stats.devices.map(d => [d.device_id, d]));
+        cards.innerHTML = known.map(id => {
+          const d = byId[id];
+          if (!d) {
+            return `<div class="card">
+              <h2><span class="dev">${id}</span><span class="dead">● 대기</span></h2>
+              <div class="big">0</div>
+              <div class="sub">검출 없음</div>
+            </div>`;
+          }
+          const cls = statusClass(d.last_seen);
+          const label = cls === "pulse" ? "● 활성" : cls === "stale" ? "● 지연" : "● 중단";
+          const tags = (d.top_classes || []).map(c =>
+            `<span class="tag">${c.class} ${c.n}</span>`).join("");
+          return `<div class="card">
+            <h2>
+              <span class="dev">${d.device_id}</span>
+              <span class="${cls}">${label}</span>
+            </h2>
+            <div class="big">${d.total.toLocaleString()}</div>
+            <div class="sub">
+              총 검출 · 최근 1분 ${d.last_1m} ·
+              avg conf ${d.avg_conf ? d.avg_conf.toFixed(2) : "—"} ·
+              ${fmtAgo(d.last_seen)}
+            </div>
+            <div class="tags">${tags}</div>
+          </div>`;
+        }).join("");
+
+        // --- recent table
+        const recentEl = document.getElementById("recent");
+        recentEl.innerHTML = recent.rows.map(r => `
+          <tr>
+            <td>${fmtTime(r.inserted_at)}</td>
+            <td class="dev">${r.device_id}</td>
+            <td>${r.frame_idx}</td>
+            <td>${r.class_name}</td>
+            <td class="conf">${r.confidence.toFixed(2)}</td>
+          </tr>
+        `).join("");
+
+        // --- timeline chart
+        renderTimeline(timeline);
+
+        // --- header meta
+        document.getElementById("ts").textContent = new Date().toLocaleTimeString("ko-KR", { hour12: false });
+        document.getElementById("health").textContent =
+          "DB: " + (health.db === "connected" ? "connected" : "degraded");
+      } catch (e) {
+        document.getElementById("health").textContent = "DB: error";
+        console.error(e);
+      }
+    }
+
+    function renderTimeline(tl) {
+      const allTimes = new Set();
+      Object.values(tl.series).forEach(arr => arr.forEach(p => allTimes.add(p.t)));
+      const labels = Array.from(allTimes).sort();
+      const datasets = Object.entries(tl.series).map(([dev, arr], i) => {
+        const map = Object.fromEntries(arr.map(p => [p.t, p.n]));
+        return {
+          label: dev,
+          data: labels.map(t => map[t] ?? 0),
+          borderColor: colors[i % colors.length],
+          backgroundColor: colors[i % colors.length] + "33",
+          tension: 0.25,
+          fill: true,
+          pointRadius: 2,
+        };
+      });
+      const ctx = document.getElementById("timeline");
+      if (chart) {
+        chart.data.labels = labels.map(t => parseUTC(t).toLocaleTimeString("ko-KR", { hour12: false }).slice(0, 5));
+        chart.data.datasets = datasets;
+        chart.update("none");
+      } else {
+        chart = new Chart(ctx, {
+          type: "line",
+          data: { labels: labels.map(t => parseUTC(t).toLocaleTimeString("ko-KR", { hour12: false }).slice(0, 5)), datasets },
+          options: {
+            responsive: true, maintainAspectRatio: false,
+            plugins: { legend: { labels: { color: "#E6E6E6" } } },
+            scales: {
+              x: { ticks: { color: "#B8BCC2" }, grid: { color: "#3A3D42" } },
+              y: { ticks: { color: "#B8BCC2" }, grid: { color: "#3A3D42" }, beginAtZero: true },
+            },
+          },
+        });
+      }
+    }
+
+    refresh();
+    setInterval(refresh, REFRESH_INTERVAL_MS);
+  </script>
+</body>
+</html>
