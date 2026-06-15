@@ -1,0 +1,139 @@
+# 다중 엣지 노드 시뮬레이션.
+# 동일 edge_infer 이미지를 DEVICE_ID / VIDEO_FILE 주입으로 다중 배포한다.
+# 각 엣지 컨테이너는 CPU 0.5코어 / Mem 512M 로 제한되어 엣지 환경을 모사한다.
+# 모델 가중치(./models)와 영상 데이터(./videos)는 분리 볼륨이라 독립 교체 가능.
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: edge
+      # 로컬 기본값 edge — 운영 시 .env 의 DB_PASSWORD 로 덮어쓴다.
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-edge}
+      POSTGRES_DB: edge
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U edge -d edge"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  edge-01:
+    build: ./edge_infer
+    image: ai-edge/infer:latest
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DEVICE_ID: edge-01
+      VIDEO_FILE: ${VIDEO_01:-sample.mp4}
+      MODEL_PATH: /models/yolov8n.pt
+      CONF_TH: "0.6"
+      FRAME_STRIDE: "5"
+      DB_HOST: db
+      DB_PORT: "5432"
+      DB_NAME: edge
+      DB_USER: edge
+      DB_PASSWORD: ${DB_PASSWORD:-edge}
+    volumes:
+      - ./models:/models:ro
+      - ./videos:/videos:ro
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M
+    # docker-compose v2 (non-swarm) 호환 — 위 deploy.limits 대신 아래도 동시에 동작.
+    cpus: 0.5
+    mem_limit: 512m
+
+  edge-02:
+    image: ai-edge/infer:latest
+    depends_on:
+      db:
+        condition: service_healthy
+      edge-01:
+        condition: service_started
+    environment:
+      DEVICE_ID: edge-02
+      VIDEO_FILE: ${VIDEO_02:-sample.mp4}
+      MODEL_PATH: /models/yolov8n.pt
+      CONF_TH: "0.6"
+      FRAME_STRIDE: "5"
+      DB_HOST: db
+      DB_PORT: "5432"
+      DB_NAME: edge
+      DB_USER: edge
+      DB_PASSWORD: ${DB_PASSWORD:-edge}
+    volumes:
+      - ./models:/models:ro
+      - ./videos:/videos:ro
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M
+    cpus: 0.5
+    mem_limit: 512m
+
+  edge-03:
+    image: ai-edge/infer:latest
+    depends_on:
+      db:
+        condition: service_healthy
+      edge-01:
+        condition: service_started
+    environment:
+      DEVICE_ID: edge-03
+      VIDEO_FILE: ${VIDEO_03:-sample.mp4}
+      MODEL_PATH: /models/yolov8n.pt
+      CONF_TH: "0.6"
+      FRAME_STRIDE: "5"
+      DB_HOST: db
+      DB_PORT: "5432"
+      DB_NAME: edge
+      DB_USER: edge
+      DB_PASSWORD: ${DB_PASSWORD:-edge}
+    volumes:
+      - ./models:/models:ro
+      - ./videos:/videos:ro
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M
+    cpus: 0.5
+    mem_limit: 512m
+
+  monitor:
+    build: ./monitor
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DB_HOST: db
+      DB_PORT: "5432"
+      DB_NAME: edge
+      DB_USER: edge
+      DB_PASSWORD: ${DB_PASSWORD:-edge}
+
+  dashboard:
+    build: ./dashboard
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DB_HOST: db
+      DB_PORT: "5432"
+      DB_NAME: edge
+      DB_USER: edge
+      DB_PASSWORD: ${DB_PASSWORD:-edge}
+    ports:
+      - "8080:8080"
+
+volumes:
+  db_data:

@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.env
+.venv/
+.DS_Store
+
+# 대용량 자산은 커밋하지 않는다
+models/*.pt
+videos/*.mp4
+videos/*.mov
+videos/*.avi
